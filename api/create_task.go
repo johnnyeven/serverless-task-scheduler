@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -66,6 +67,10 @@ func CreateTask(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		responseError(w, err)
+		return
+	}
+	if len(bodyBytes) == 0 {
+		responseError(w, fmt.Errorf("parameter is required"))
 		return
 	}
 

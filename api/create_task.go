@@ -78,6 +78,5 @@ func CreateTask(w http.ResponseWriter, r *http.Request) {
 		responseError(w, err)
 		return
 	}
-
 	responseData(w, m)
 }

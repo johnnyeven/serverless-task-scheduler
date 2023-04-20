@@ -20,6 +20,8 @@ type Task struct {
 	Image4    *[]byte   `gorm:"column:image4" json:"image4"`
 	CreatedAt time.Time `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt time.Time `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	UserID    int64     `gorm:"column:user_id;not null" json:"user_id"`
+	Status    int32     `gorm:"column:status;not null;default:1" json:"status"`
 }
 
 // TableName Task's table name

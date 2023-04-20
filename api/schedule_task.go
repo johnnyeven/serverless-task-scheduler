@@ -150,7 +150,5 @@ func call(m Model, task *model.Task) {
 		return
 	}
 
-	// 更新任务状态为处理中
-	_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Running))
 	_, _ = client.Post(m.Api, "application/json", bytes.NewReader(request.Json()))
 }

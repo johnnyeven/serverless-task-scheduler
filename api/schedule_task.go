@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 	"io"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"reflect"
 	"severless-task-scheduler/db/model"
 	"strconv"
+	"time"
 )
 
 type PredictRequest interface {
@@ -19,7 +22,14 @@ type PredictRequest interface {
 }
 
 type GradioRequest struct {
-	Data []any `json:"data"`
+	TaskID            int64  `json:"task_id"`
+	Prompt            string `json:"prompt"`
+	NegativePrompt    string `json:"negative_prompt"`
+	NumInferenceSteps int    `json:"num_inference_steps"`
+	Width             int    `json:"width"`
+	Height            int    `json:"height"`
+	GuidanceScale     int    `json:"guidance_scale"`
+	RandSeed          int    `json:"rand_seed"`
 }
 
 func (g *GradioRequest) Json() []byte {
@@ -37,14 +47,14 @@ func (g *GradioRequest) Parse(r io.Reader, task *model.Task) error {
 	if err != nil {
 		return err
 	}
-	g.Data = append(g.Data, task.ID)
-	g.Data = append(g.Data, content["prompt"])
-	g.Data = append(g.Data, DefaultNegativePrompt)
-	g.Data = append(g.Data, DefaultNumInferenceSteps)
-	g.Data = append(g.Data, DefaultWidth)
-	g.Data = append(g.Data, DefaultHeight)
-	g.Data = append(g.Data, DefaultGuidanceScale)
-	g.Data = append(g.Data, DefaultRandSeed)
+	g.TaskID = task.ID
+	g.Prompt = content["prompt"].(string)
+	g.NegativePrompt = DefaultNegativePrompt
+	g.NumInferenceSteps = DefaultNumInferenceSteps
+	g.Width = DefaultWidth
+	g.Height = DefaultHeight
+	g.GuidanceScale = DefaultGuidanceScale
+	g.RandSeed = DefaultRandSeed
 	return nil
 }
 
@@ -134,6 +144,9 @@ func ScheduleTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func call(m Model, task *model.Task) {
+	// 更新任务状态为执行中
+	_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Running))
+
 	requestReflect, ok := modelRequest[m.Name]
 	if !ok {
 		// 更新任务状态为失败
@@ -150,5 +163,35 @@ func call(m Model, task *model.Task) {
 		return
 	}
 
-	_, _ = client.Post(m.Api, "application/json", bytes.NewReader(request.Json()))
+	dialer := websocket.Dialer{}
+	connect, _, err := dialer.Dial(
+		m.Api, http.Header{
+			"ngrok-skip-browser-warning": []string{"true"},
+		},
+	)
+	if err != nil {
+		// 更新任务状态为失败
+		logrus.Errorf("connect model api error: %v", err)
+		return
+	}
+	defer connect.Close()
+	err = connect.WriteMessage(websocket.TextMessage, request.Json())
+	if err != nil {
+		// 更新任务状态为失败
+		logrus.Errorf("write message error: %v", err)
+		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+		return
+	}
+	connect.SetReadDeadline(time.Now().Add(15 * time.Minute))
+	messageType, message, err := connect.ReadMessage()
+	if err != nil {
+		// 更新任务状态为失败
+		logrus.Errorf("read message error: %v", err)
+		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+		return
+	}
+
+	if messageType == websocket.TextMessage {
+		fmt.Println(string(message))
+	}
 }

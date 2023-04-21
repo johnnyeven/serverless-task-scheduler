@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"reflect"
 	"severless-task-scheduler/db/model"
 	"strconv"
@@ -68,6 +69,15 @@ type TaskParameter struct {
 	Model  string `json:"model"`
 }
 
+type Status int32
+
+const (
+	Init Status = iota + 1
+	Running
+	Success
+	Fail
+)
+
 const (
 	DefaultNegativePrompt    = "nsfw,(worst quality:2),(low quality:2)"
 	DefaultNumInferenceSteps = 20
@@ -75,6 +85,10 @@ const (
 	DefaultHeight            = 512
 	DefaultGuidanceScale     = 7
 	DefaultRandSeed          = -1
+
+	MaxReadSize          = 1024 * 1024
+	ReadWait             = 15 * time.Minute
+	HeartbeatWritePeriod = 10 * time.Second
 )
 
 var modelRequest = map[string]reflect.Type{
@@ -84,11 +98,9 @@ var modelRequest = map[string]reflect.Type{
 	"nerverendDream": reflect.TypeOf(GradioRequest{}),
 }
 
-var models map[string]Model
+var connections map[string]*websocket.Conn
 
-var client = &http.Client{
-	Timeout: 0,
-}
+var models map[string]Model
 
 func init() {
 	models = make(map[string]Model)
@@ -100,6 +112,55 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+
+	connections = make(map[string]*websocket.Conn)
+	dialer := websocket.Dialer{}
+	for name, model := range models {
+		connection, _, err := dialer.Dial(
+			model.Api, http.Header{
+				"ngrok-skip-browser-warning": []string{"true"},
+			},
+		)
+		if err != nil {
+			// 更新任务状态为失败
+			logrus.Errorf("connect model api error: %v", err)
+			return
+		}
+
+		go func(connection *websocket.Conn) {
+			connection.SetPongHandler(
+				func(string) error {
+					connection.SetReadDeadline(time.Now().Add(ReadWait))
+					return nil
+				},
+			)
+			timer := time.NewTicker(HeartbeatWritePeriod)
+			defer timer.Stop()
+			for {
+				select {
+				case <-timer.C:
+					if err := connection.WriteMessage(websocket.PingMessage, nil); err != nil {
+						return
+					}
+				}
+			}
+		}(connection)
+		connections[name] = connection
+	}
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, os.Kill)
+
+	go func() {
+		<-sig
+		for _, connection := range connections {
+			_ = connection.Close()
+		}
+	}()
+}
+
+func GetConnection(modelName string) *websocket.Conn {
+	return connections[modelName]
 }
 
 func ScheduleTask(w http.ResponseWriter, r *http.Request) {
@@ -128,13 +189,23 @@ func ScheduleTask(w http.ResponseWriter, r *http.Request) {
 		err = json.Unmarshal([]byte(task.Parameter), &taskParameter)
 		if err != nil {
 			// 更新任务状态为失败
-			_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+			_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+				model.Task{
+					Status:  int32(Fail),
+					Message: StrPtr(fmt.Sprintf("json unmarshal error: %v", err)),
+				},
+			)
 			continue
 		}
 		m, ok := models[taskParameter.Model]
 		if !ok {
 			// 更新任务状态为失败
-			_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+			_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+				model.Task{
+					Status:  int32(Fail),
+					Message: StrPtr(fmt.Sprintf("model %s not found", taskParameter.Model)),
+				},
+			)
 			continue
 		}
 		// 调用模型API
@@ -151,7 +222,12 @@ func call(m Model, task *model.Task) {
 	if !ok {
 		// 更新任务状态为失败
 		logrus.Errorf("model requestReflect %s not found", m.Name)
-		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+			model.Task{
+				Status:  int32(Fail),
+				Message: StrPtr(fmt.Sprintf("model requestReflect %s not found", m.Name)),
+			},
+		)
 		return
 	}
 	request := reflect.New(requestReflect).Interface().(PredictRequest)
@@ -159,35 +235,51 @@ func call(m Model, task *model.Task) {
 	if err != nil {
 		// 更新任务状态为失败
 		logrus.Errorf("parse task parameter error: %v", err)
-		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+			model.Task{
+				Status:  int32(Fail),
+				Message: StrPtr(fmt.Sprintf("parse task parameter error: %v", err)),
+			},
+		)
 		return
 	}
 
-	dialer := websocket.Dialer{}
-	connect, _, err := dialer.Dial(
-		m.Api, http.Header{
-			"ngrok-skip-browser-warning": []string{"true"},
-		},
-	)
-	if err != nil {
+	connect := GetConnection(m.Name)
+	if connect == nil {
 		// 更新任务状态为失败
-		logrus.Errorf("connect model api error: %v", err)
+		logrus.Errorf("get connection error, model: %s", m.Name)
+		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+			model.Task{
+				Status:  int32(Fail),
+				Message: StrPtr(fmt.Sprintf("get connection error, model: %s", m.Name)),
+			},
+		)
 		return
 	}
-	defer connect.Close()
 	err = connect.WriteMessage(websocket.TextMessage, request.Json())
 	if err != nil {
 		// 更新任务状态为失败
 		logrus.Errorf("write message error: %v", err)
-		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+			model.Task{
+				Status:  int32(Fail),
+				Message: StrPtr(fmt.Sprintf("write message error: %v", err)),
+			},
+		)
 		return
 	}
-	connect.SetReadDeadline(time.Now().Add(15 * time.Minute))
+	connect.SetReadLimit(MaxReadSize)
+	connect.SetReadDeadline(time.Now().Add(ReadWait))
 	messageType, message, err := connect.ReadMessage()
 	if err != nil {
 		// 更新任务状态为失败
 		logrus.Errorf("read message error: %v", err)
-		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumn(query.Task.Status, int32(Fail))
+		_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+			model.Task{
+				Status:  int32(Fail),
+				Message: StrPtr(fmt.Sprintf("read message error: %v", err)),
+			},
+		)
 		return
 	}
 

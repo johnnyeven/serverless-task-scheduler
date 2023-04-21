@@ -26,15 +26,6 @@ func init() {
 	query = api.Use(db)
 }
 
-type Status int32
-
-const (
-	Init Status = iota + 1
-	Running
-	Success
-	Fail
-)
-
 func responseData(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -70,6 +61,10 @@ func responseError(w http.ResponseWriter, errMsg error) {
 	}
 	responseBytes, _ := json.Marshal(responseBody)
 	w.Write(responseBytes)
+}
+
+func StrPtr(s string) *string {
+	return &s
 }
 
 func CreateTask(w http.ResponseWriter, r *http.Request) {

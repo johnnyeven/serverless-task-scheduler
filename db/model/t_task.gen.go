@@ -22,6 +22,7 @@ type Task struct {
 	UpdatedAt time.Time `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	UserID    int64     `gorm:"column:user_id;not null" json:"user_id"`
 	Status    int32     `gorm:"column:status;not null;default:1" json:"status"`
+	Message   *string   `gorm:"column:message" json:"message"`
 }
 
 // TableName Task's table name

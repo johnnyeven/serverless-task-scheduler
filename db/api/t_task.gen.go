@@ -37,6 +37,7 @@ func newTask(db *gorm.DB, opts ...gen.DOOption) task {
 	_task.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_task.UserID = field.NewInt64(tableName, "user_id")
 	_task.Status = field.NewInt32(tableName, "status")
+	_task.Message = field.NewString(tableName, "message")
 
 	_task.fillFieldMap()
 
@@ -57,6 +58,7 @@ type task struct {
 	UpdatedAt field.Time
 	UserID    field.Int64
 	Status    field.Int32
+	Message   field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -83,6 +85,7 @@ func (t *task) updateTableName(table string) *task {
 	t.UpdatedAt = field.NewTime(table, "updated_at")
 	t.UserID = field.NewInt64(table, "user_id")
 	t.Status = field.NewInt32(table, "status")
+	t.Message = field.NewString(table, "message")
 
 	t.fillFieldMap()
 
@@ -99,7 +102,7 @@ func (t *task) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (t *task) fillFieldMap() {
-	t.fieldMap = make(map[string]field.Expr, 10)
+	t.fieldMap = make(map[string]field.Expr, 11)
 	t.fieldMap["id"] = t.ID
 	t.fieldMap["parameter"] = t.Parameter
 	t.fieldMap["image1"] = t.Image1
@@ -110,6 +113,7 @@ func (t *task) fillFieldMap() {
 	t.fieldMap["updated_at"] = t.UpdatedAt
 	t.fieldMap["user_id"] = t.UserID
 	t.fieldMap["status"] = t.Status
+	t.fieldMap["message"] = t.Message
 }
 
 func (t task) clone(db *gorm.DB) task {

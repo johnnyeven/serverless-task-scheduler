@@ -284,6 +284,28 @@ func call(m Model, task *model.Task) {
 	}
 
 	if messageType == websocket.TextMessage {
-		fmt.Println(string(message))
+		images := make([]string, 0)
+		err = json.Unmarshal(message, &images)
+		if err != nil {
+			// 更新任务状态为失败
+			logrus.Errorf("json unmarshal error: %v", err)
+			_, _ = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+				model.Task{
+					Status:  int32(Fail),
+					Message: StrPtr(fmt.Sprintf("json unmarshal error: %v", err)),
+				},
+			)
+			return
+		}
+		// 更新任务状态为成功
+		_, err = query.Task.Where(query.Task.ID.Eq(task.ID)).UpdateColumns(
+			model.Task{
+				Status: int32(Success),
+				Image1: BytesPtr([]byte(images[0])),
+			},
+		)
+		if err != nil {
+			logrus.Errorf("update task error: %v", err)
+		}
 	}
 }

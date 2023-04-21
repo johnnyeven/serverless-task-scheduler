@@ -67,6 +67,10 @@ func StrPtr(s string) *string {
 	return &s
 }
 
+func BytesPtr(b []byte) *[]byte {
+	return &b
+}
+
 func CreateTask(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
